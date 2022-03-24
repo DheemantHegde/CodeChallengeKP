@@ -1,0 +1,415 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS 3-Tier LAMP Stack with 2 AZ, RDS 
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VpcId of your existing Virtual Private Cloud (VPC)
+    Default: vpc-03dwewnsndjaskjnki
+    ConstraintDescription: Must be the VPC Id of an existing Virtual Private Cloud.
+  DBName:
+    Default: myDatabase
+    Description: MySQL database name
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters.
+  DBAllocatedStorage:
+    Default: '5'
+    Description: The size of the database (Gb)
+    Type: Number
+    MinValue: '5'
+    MaxValue: '1024'
+    ConstraintDescription: must be between 5 and 1024Gb.
+  DBInstanceClass:
+    Description: The database instance type
+    Type: String
+    Default: db.t2.small
+    AllowedValues:
+		- db.t2.small
+		- db.t2.medium
+    ConstraintDescription: must select a valid database instance type.
+  MultiAZDatabase:
+    Default: 'false'
+    Description: Create a Multi-AZ MySQL Amazon RDS database instance
+    Type: String
+    AllowedValues:
+		- 'true'
+		- 'false'
+    ConstraintDescription: Must be either true or false.
+  WebServerCapacity:
+    Default: '1'
+    Description: The initial number of WebServer instances
+    Type: Number
+    MinValue: '1'
+    MaxValue: '5'
+    ConstraintDescription: Must be between 1 and 5 EC2 instances.
+  IAMEC2InstanceProfile:
+    Description: WebServer EC2 IAM instance profile (with read permission to AWS Secrets Manager).
+    Type: String
+    Default: customer-mc-ec2ssm
+    AllowedPattern: "^customer-[a-zA-Z0-9-_]*$|^$"
+    ConstraintDescription: A valid pre-existing EC2 IAM role.
+  InstanceType:
+    Description: WebServer EC2 instance type
+    Type: String
+    Default: t2.small
+    AllowedValues:
+    - t2.small
+    - t2.medium
+    ConstraintDescription: must be a valid EC2 instance type.
+  InstanceAmiId:
+    Description: WebServer EC2 AMI Id
+    Type: AWS::EC2::Image::Id
+    Default: ami-0d2ea9da36cf62840
+    ConstraintDescription: Must be the AMI Id of an existing AMI in your account.
+Resources:
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      VpcId:
+        Ref: VpcId
+      SecurityGroupIngress:
+			- IpProtocol: tcp
+			FromPort: 80
+			ToPort: 80
+			CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+			- IpProtocol: tcp
+			FromPort: 80
+			ToPort: 80
+			CidrIp: "{{resolve:ssm:/app/DemoApp/VPCCidr:1}}"
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+		- "{{resolve:ssm:/app/DemoApp/PublicSubnet1a:1}}"
+		- "{{resolve:ssm:/app/DemoApp/PublicSubnet1c:1}}"
+      SecurityGroups:
+		- Ref: ALBSecurityGroup
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: ALBTargetGroup
+      LoadBalancerArn:
+        Ref: ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 300
+      HealthCheckTimeoutSeconds: 120
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Ref: VpcId
+      TargetGroupAttributes:
+		- Key: stickiness.enabled
+		Value: 'true'
+		- Key: stickiness.type
+        Value: lb_cookie
+		- Key: stickiness.lb_cookie.duration_seconds
+        Value: '30'
+  WebServerGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+		- "{{resolve:ssm:/app/DemoApp/PrivateSubnet1a:1}}"
+		- "{{resolve:ssm:/app/DemoApp/PrivateSubnet1c:1}}"
+      LaunchConfigurationName:
+        Ref: LaunchConfig
+      MinSize: '1'
+      MaxSize: '5'
+      DesiredCapacity:
+        Ref: WebServerCapacity
+      TargetGroupARNs:
+		- Ref: ALBTargetGroup
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+        Count:
+          Ref: WebServerCapacity
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT15M
+        WaitOnResourceSignals: true
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      Comment: Configure the bootstrap helpers to install the Apache Web Server and PHP
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              httpd: []
+              php: []
+              php-mysql: []
+              jq: []
+          files:
+            "/var/www/html/index.php":
+              content:
+                Fn::Join:
+                - ''
+                - - "<html>\n"
+                  - "  <head>\n"
+                  - "    <title>AWS CloudFormation PHP Sample</title>\n"
+                  - '    <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+
+                    '
+                  - "  </head>\n"
+                  - "  <body>\n"
+                  - "    <h1>Welcome to the AWS CloudFormation PHP Sample</h1>\n"
+                  - "    <p/>\n"
+                  - "    <?php\n"
+                  - "      // Print out the current data and tie\n"
+                  - '      print "The Current Date and Time is: <br/>";
+
+                    '
+                  - '      print date("g:i A l, F j Y.");
+
+                    '
+                  - "    ?>\n"
+                  - "    <p/>\n"
+                  - "    <?php\n"
+                  - "      // Setup a handle for CURL\n"
+                  - "      $curl_handle=curl_init();\n"
+                  - "      curl_setopt($curl_handle,CURLOPT_CONNECTTIMEOUT,2);\n"
+                  - "      curl_setopt($curl_handle,CURLOPT_RETURNTRANSFER,1);\n"
+                  - "      // Get the instance-id of the intance from the instance
+                    metadata\n"
+                  - "      curl_setopt($curl_handle,CURLOPT_URL,'http://169.254.169.254/latest/meta-data/instance-id');\n"
+                  - "      $instanceid = curl_exec($curl_handle);\n"
+                  - "      if (empty($instanceid))\n"
+                  - "      {\n"
+                  - '        print "Sorry, for some reason, we got no instance id
+                    back <br />";
+
+                    '
+                  - "      }\n"
+                  - "      else\n"
+                  - "      {\n"
+                  - '        print "EC2 instance-id = " . $instanceid . "<br />";
+
+                    '
+                  - "      }\n"
+                  - '      $Database   = "'
+                  - Fn::GetAtt:
+                    - MySQLDatabase
+                    - Endpoint.Address
+                  - "\";\n"
+                  - '      $myufile = fopen("/dbuser.txt", "r") or die("Unable to
+                    open file");
+
+                    '
+                  - "      $DBUsr = fgets($myufile);\n"
+                  - "      $DBUser = trim(preg_replace('/\\s+/', ' ', $DBUsr ));\n"
+                  - '      $mypfile = fopen("/dbpass.txt", "r") or die("Unable to
+                    open file");
+
+                    '
+                  - "      $DBPass = fgets($mypfile);\n"
+                  - "      $DBPassword = trim(preg_replace('/\\s+/', ' ', $DBPass));\n"
+                  - '      print "Database = " . $Database . "<br />";
+
+                    '
+                  - '      print "User = " . $DBUser . "<br />";
+
+                    '
+                  - '      print "Pass = " . $DBPassword . "<br />";
+
+                    '
+                  - "      fclose($mypfile);\n"
+                  - "      fclose($myufile);\n"
+                  - "      $dbconnection = mysql_connect($Database, $DBUser, $DBPassword)\n"
+                  - '                      or die("Could not connect: " . mysql_error());
+
+                    '
+                  - '      print ("Connected to $Database successfully");
+
+                    '
+                  - "      mysql_close($dbconnection);\n"
+                  - "    ?>\n"
+                  - "    <h2>PHP Information</h2>\n"
+                  - "    <p/>\n"
+                  - "    <?php\n"
+                  - "      phpinfo();\n"
+                  - "    ?>\n"
+                  - "  </body>\n"
+                  - "</html>\n"
+              mode: '000600'
+              owner: apache
+              group: apache
+            "/etc/cfn/cfn-hup.conf":
+              content:
+                Fn::Join:
+                - ''
+                - - "[main]\n"
+                  - stack=
+                  - Ref: AWS::StackId
+                  - "\n"
+                  - region=
+                  - Ref: AWS::Region
+                  - "\n"
+              mode: '000400'
+              owner: root
+              group: root
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content:
+                Fn::Join:
+                - ''
+                - - "[cfn-auto-reloader-hook]\n"
+                  - 'triggers=post.update
+
+                    '
+                  - 'path=Resources.LaunchConfig.Metadata.AWS::CloudFormation::Init
+
+                    '
+                  - 'action=/opt/aws/bin/cfn-init -v '
+                  - "         --stack "
+                  - Ref: AWS::StackName
+                  - "         --resource LaunchConfig "
+                  - "         --region "
+                  - Ref: AWS::Region
+                  - "\n"
+                  - 'runas=root
+
+                    '
+              mode: '000400'
+              owner: root
+              group: root
+          services:
+            sysvinit:
+              httpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                - "/etc/cfn/cfn-hup.conf"
+                - "/etc/cfn/hooks.d/cfn-auto-reloader.conf"
+    Properties:
+      ImageId:
+        Ref: InstanceAmiId
+      InstanceType:
+        Ref: InstanceType
+      IamInstanceProfile:
+        Ref: IAMEC2InstanceProfile
+      SecurityGroups:
+      - Ref: WebServerSecurityGroup
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - ''
+          - - "#!/bin/bash -x\n"
+            - "# Fix cfn-hup bug:\n"
+            - 'ln -sfn /opt/aws/apitools/cfn-init/init/redhat/cfn-hup /etc/init.d/cfn-hup
+
+              '
+            - "# Install the files and packages from the metadata\n"
+            - "/opt/aws/bin/cfn-init -v "
+            - " --stack "
+            - Ref: AWS::StackName
+            - " --resource LaunchConfig "
+            - " --region "
+            - Ref: AWS::Region
+            - "\n"
+            - STAT=$?
+            - |2
+
+              # Retrieve the DB credentials from AWS Secrets Manager service, for App to consume.
+            - 'aws --region '
+            - Ref: AWS::Region
+            - " secretsmanager get-secret-value --secret-id ams-shared/myapp/dev/dbsecrets
+              | jq -r \".SecretString\" | jq -r \".password\" > /dbpass.txt \n"
+            - "[[ ! -s /dbpass.txt ]] && STAT=1 \n"
+            - 'aws --region '
+            - Ref: AWS::Region
+            - " secretsmanager get-secret-value --secret-id ams-shared/myapp/dev/dbsecrets
+              | jq -r \".SecretString\" | jq -r \".username\" > /dbuser.txt \n"
+            - "[[ ! -s /dbuser.txt ]] && STAT=1 \n"
+            - "chmod 640 /dbuser.txt /dbpass.txt \n"
+            - "chgrp 48 /dbuser.txt /dbpass.txt \n"
+            - "# Signal the status from cfn-init and above AWS commands\n"
+            - "/opt/aws/bin/cfn-signal -e $STAT "
+            - " --stack "
+            - Ref: AWS::StackName
+            - " --resource WebServerGroup "
+            - " --region "
+            - Ref: AWS::Region
+            - "\n"
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 locked down to the ELB and
+        SSH access
+      SecurityGroupIngress:
+		- IpProtocol: tcp
+			FromPort: 80
+			ToPort: 80
+			SourceSecurityGroupId:
+				Ref: ALBSecurityGroup
+      VpcId:
+        Ref: VpcId
+  DBEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Open database for access
+      SecurityGroupIngress:
+		- IpProtocol: tcp
+			FromPort: 3306
+			ToPort: 3306
+			SourceSecurityGroupId:
+				Ref: WebServerSecurityGroup
+      VpcId:
+        Ref: VpcId
+  myDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: description
+      SubnetIds:
+		- "{{resolve:ssm:/app/DemoApp/PrivateSubnet1a:1}}"
+		- "{{resolve:ssm:/app/DemoApp/PrivateSubnet1c:1}}"
+      Tags:
+		- Key: String
+			Value: String
+  MySQLDatabase:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: MySQL
+      DBName:
+        Ref: DBName
+      MultiAZ:
+        Ref: MultiAZDatabase
+      MasterUsername: "{{resolve:secretsmanager:ams-shared/myapp/dev/dbsecrets:SecretString:username}}"
+      MasterUserPassword: "{{resolve:secretsmanager:ams-shared/myapp/dev/dbsecrets:SecretString:password}}"
+      DBInstanceClass:
+        Ref: DBInstanceClass
+      AllocatedStorage:
+        Ref: DBAllocatedStorage
+      DBSubnetGroupName:
+        Ref: myDBSubnetGroup
+      VPCSecurityGroups:
+		- Fn::GetAtt:
+			- DBEC2SecurityGroup
+			- GroupId
+Outputs:
+  WebsiteURL:
+    Description: URL for newly created LAMP stack
+    Value:
+      Fn::Join:
+      - ''
+      - - http://
+        - Fn::GetAtt:
+          - ApplicationLoadBalancer
+          - DNSName
