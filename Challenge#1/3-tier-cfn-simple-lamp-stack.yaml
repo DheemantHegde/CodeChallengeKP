@@ -1,6 +1,6 @@
 ---
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS 3-Tier LAMP Stack with 2 AZ, RDS 
+Description: AWS 3-Tier LAMP Stack with 2 AZ
 Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
