@@ -413,4 +413,3 @@ Outputs:
         - Fn::GetAtt:
           - ApplicationLoadBalancer
           - DNSName
-test
